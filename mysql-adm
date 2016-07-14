@@ -1,0 +1,359 @@
+#!/bin/bash
+#===============================================================================
+# mysql-adm : mysql command wrapper
+#===============================================================================
+
+SCRIPT_BASE=`echo $(cd $(dirname $0); pwd)`
+SCRIPT_NAME=`basename $0`
+
+#-------------------------------------------------------------------------------
+#- common functions ------------------------------------------------------------
+
+__setupcolor() { #{{{
+  # Escape sequence
+  ESC="\e["
+  ESCEND=m
+  C_OFF=${ESC}${ESCEND}
+
+  # normal
+  C_BLACK="${ESC}30${ESCEND}"
+  C_RED="${ESC}31${ESCEND}"
+  C_GREEN="${ESC}32${ESCEND}"
+  C_YELLOW="${ESC}33${ESCEND}"
+  C_BLUE="${ESC}34${ESCEND}"
+  C_MAGENTA="${ESC}35${ESCEND}"
+  C_CYAN="${ESC}36${ESCEND}"
+  C_WHITE="${ESC}37${ESCEND}"
+
+  RES_COL=60
+  MOVE_TO_COL="echo -en \\033[${RES_COL}G"
+}
+#}}}
+
+__show_ok() { #{{{
+  [ "${SILENT_MODE}" ] && return
+  [[ "$1" && "$1" -gt 0 ]] && echo -en "\\033[${1}G"
+  echo -en "[ ${C_GREEN}OK${C_OFF}"
+  [ "$2" ] && echo " ]$2" || echo " ]"
+}
+#}}}
+
+__show_info() { #{{{
+  [[ -n "${SILENT_MODE}" ]] && return
+  [[ "$1" == "-n" ]] && echo -en "${C_CYAN}${2}${C_OFF}" || echo -e "${C_CYAN}${1}${C_OFF}"
+}
+#}}}
+
+__show_error() { #{{{
+  echo -e "[${C_RED}ERROR${C_OFF}] $1"
+}
+#}}}
+
+__error_end() { #{{{
+  __show_error "$1"; exit 1
+}
+#}}}
+
+
+#-------------------------------------------------------------------------------
+#- functions -------------------------------------------------------------------
+
+function _listdb() { #{{{
+  mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOS | sed -nre '2,$p'
+show databases;
+EOS
+}
+#}}}
+
+function _existsdb() { #{{{
+  local _DBNAME="$1"
+  [[ ! "$_DBNAME" ]] && _usage
+  _listdb | egrep "^${_DBNAME}$" > /dev/null
+  return $?
+}
+#}}}
+
+function _createdb() { #{{{
+  local _DBNAME="$1"
+  [[ ! "$_DBNAME" ]] && _usage
+  if [[ "$DRY_RUN" ]]; then
+    echo "create database ${_DBNAME};"
+    return 0
+  fi
+  if _existsdb "$_DBNAME"; then
+    __error_end "Database $_DBNAME is already exists."
+  fi
+  echo -n "Creating database ${_DBNAME} ... "
+  mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOS
+create database \`${_DBNAME}\`;
+EOS
+  local _RESULT=$?
+  [ $_RESULT -eq 0 ] && __show_ok || __show_error
+  return $_RESULT
+}
+#}}}
+
+function _dropdb() { #{{{
+  local _DBNAME="$1"
+  [[ ! "$_DBNAME" ]] && _usage
+  if [[ "$DRY_RUN" ]]; then
+    echo "drop database `${_DBNAME}`;"
+    return 0
+  fi
+  if _existsdb "$_DBNAME"; then :; else
+    __error_end "Database $_DBNAME is not exists."
+  fi
+  echo -n "Dropping database ${_DBNAME} ... "
+  mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOS
+drop database \`${_DBNAME}\`;
+EOS
+  local _RESULT=$?
+  [ $_RESULT -eq 0 ] && __show_ok || __show_error
+  return $_RESULT
+}
+#}}}
+
+function _listusers() { #{{{
+  mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOS | sed -nre '2,$p'
+select concat(user, '@', host) user from mysql.user;
+EOS
+}
+#}}}
+
+function _existsuser() { #{{{
+  local _USERNAME="$1"
+  [[ ! "$_USERNAME" ]] && _usage
+  local _HOSTNAME=%
+  if [[ ${_USERNAME} =~ .+@.+ ]]; then
+    _HOSTNAME=${_USERNAME#*@}
+    _USERNAME=${_USERNAME%@*}
+  fi
+  _listusers | egrep "^${_USERNAME}@${_HOSTNAME}$" > /dev/null
+  return $?
+}
+#}}}
+
+function _createuser() { #{{{
+  while getopts p:g: OPT; do
+    case "$OPT" in
+      p) local _USERPASS="$OPTARG"
+        ;;
+      g) local _GRANT_TO="$OPTARG"
+        ;;
+    esac
+  done
+  shift `expr $OPTIND - 1`
+  local _USERNAME="$1"
+  local _HOSTNAME=%
+  if [[ ${_USERNAME} =~ .+@.+ ]]; then
+    local _HOSTNAME=${_USERNAME#*@}
+    local _USERNAME=${_USERNAME%@*}
+  fi
+  [[ ! "${_USERNAME}" ]] && _usage
+  [[ ! "${_USERPASS}" ]] && _USERPASS="${_USERNAME}"
+  [[ ! "${_GRANT_TO}" ]] && _GRANT_TO="${_USERNAME}"
+
+  if [[ "$DRY_RUN" ]]; then
+    echo "grant all privileges on \`${_GRANT_TO}\`.* to '${_USERNAME}'@'${_HOSTNAME}' identified by \"${_USERPASS}\" with grant option;"
+    return 0
+  fi
+
+  if _existsuser "${_USERNAME}@${_HOSTNAME}"; then
+    __error_end "User $_USERNAME is already exists."
+  fi
+  if _existsdb "$_GRANT_TO"; then :; else
+    __error_end "Database $_GRANT_TO is not exists."
+  fi
+  echo -n "Creating user ${_USERNAME}%${_HOSTNAME} & grant to ${_GRANT_TO} ... "
+
+  mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOS
+grant all privileges on \`${_GRANT_TO}\`.* to '${_USERNAME}'@'${_HOSTNAME}' identified by "${_USERPASS}" with grant option;
+EOS
+  local _RESULT=$?
+  [ $_RESULT -eq 0 ] && __show_ok || __show_error
+  return $_RESULT
+}
+#}}}
+
+function _dropuser() { #{{{
+  local _USERNAME="$1"
+  local _HOSTNAME=%
+  if [[ ${_USERNAME} =~ .+@.+ ]]; then
+    local _HOSTNAME=${_USERNAME#*@}
+    local _USERNAME=${_USERNAME%@*}
+  fi
+  [[ ! "$_USERNAME" ]] && _usage
+  if [[ "$DRY_RUN" ]]; then
+    echo "drop user '${_USERNAME}'@'${_HOSTNAME}';"
+    return 0
+  fi
+  if _existsuser "${_USERNAME}@${_HOSTNAME}"; then :; else
+    __error_end "User ${_USERNAME}@${_HOSTNAME} is not exists."
+  fi
+  echo -n "Dropping user ${_USERNAME}@${_HOSTNAME} ... "
+  mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOS
+drop user '${_USERNAME}'@'${_HOSTNAME}';
+EOS
+  local _RESULT=$?
+  [ $_RESULT -eq 0 ] && __show_ok || __show_error
+  return $_RESULT
+}
+#}}}
+
+function _showgrants() { #{{{
+  local _USERNAME="$1"
+  local _HOSTNAME=%
+  if [[ ${_USERNAME} =~ .+@.+ ]]; then
+    local _HOSTNAME=${_USERNAME#*@}
+    local _USERNAME=${_USERNAME%@*}
+  fi
+  [[ ! "$_USERNAME" ]] && _usage
+  if [[ "$DRY_RUN" ]]; then
+    echo "show grants for ${_USERNAME}@${_HOSTNAME};"
+    return 0
+  fi
+  mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOS
+show grants for '${_USERNAME}'@'${_HOSTNAME}';
+EOS
+  local _RESULT=$?
+  [ $_RESULT -eq 0 ] && __show_ok || __show_error
+  return $_RESULT
+}
+#}}}
+
+function _dumpdb() { #{{{
+  local _DBNAME="$1"
+  local _OUTFILE="$2"
+  [[ ! "$_DBNAME" ]] && _usage
+  [[ ! "$_OUTFILE" ]] && _OUTFILE="${_DBNAME}.backup.sql"
+  if [[ "$DRY_RUN" ]]; then
+    echo "mysqldump -u root -p${MYSQL_ROOT_PASS} --hex-blob --lock-tables ${_DBNAME} > ${_OUTFILE}"
+    return 0
+  fi
+  if _existsdb "$_DBNAME"; then :; else
+    __error_end "Database $_DBNAME is not exists."
+  fi
+  echo -n "Dumping database ${_DBNAME} to ${_OUTFILE} ... "
+  mysqldump -u root -p${MYSQL_ROOT_PASS} --hex-blob --lock-tables ${_DBNAME} > ${_OUTFILE}
+  local _RESULT=$?
+  [ $_RESULT -eq 0 ] && __show_ok || __show_error
+  return $_RESULT
+}
+#}}}
+
+function _remote_dump() { #{{{
+  while getopts i:p: OPT; do
+    case "$OPT" in
+      i) local _ID_RSA="-i $OPTARG"
+        ;;
+      p) local _SSH_PORT="-p $OPTARG"
+        ;;
+    esac
+  done
+  shift `expr $OPTIND - 1`
+
+  local _REMOTE_HOST="$1"
+  local _DBNAME="$2"
+  local _OUTFILE="$3"
+  [[ ! "$_REMOTE_HOST" ]] && _usage
+  [[ ! "$_DBNAME" ]] && _usage
+  [[ ! "$_OUTFILE" ]] && _OUTFILE="${_DBNAME}.backup.sql"
+  if [[ "$_REMOTE_HOST" =~ [^:]+:[0-9]+ ]] ; then
+    _SSH_PORT="-p `echo "$_REMOTE_HOST" | sed -re 's/[^:]+:([0-9]+)/\1/'`"
+    _REMOTE_HOST=`echo "$_REMOTE_HOST" | sed -re 's/([^:]+):[0-9]+/\1/'`
+  fi
+  if [[ "$DRY_RUN" ]]; then
+    echo "ssh ${_ID_RSA} ${_SSH_PORT} ${_REMOTE_HOST} 'mysqldump -u root -p${MYSQL_ROOT_PASS} --hex-blob --lock-tables ${_DBNAME}' > ${_OUTFILE}"
+    return 0
+  fi
+  echo -n "Dumping remote database ${_DBNAME} to ${_OUTFILE} ... "
+  ssh ${_ID_RSA} ${_SSH_PORT} ${_REMOTE_HOST} \
+    "mysqldump -u root -p${MYSQL_ROOT_PASS} --hex-blob --lock-tables ${_DBNAME}" > ${_OUTFILE}
+  local _RESULT=$?
+  [ $_RESULT -eq 0 ] && __show_ok || __show_error
+  return $_RESULT
+}
+#}}}
+
+# usage
+_usage() { #{{{
+  [ "$1" ] && __show_error "$1"
+  echo -e "${C_CYAN}usege :${C_OFF} $SCRIPT_NAME SUB_COMMAND [-d] SUB_COMMAND_OPTIONS"
+  cat <<EOM
+  SUB_COMMANDS
+    list-db
+    exists-db   DATABASE_NAME
+    create-db   DATABASE_NAME
+    drop-db     DATABASE_NAME
+    list-users
+    exists-user USER_NAME[@HOST_NAME]
+    create-user [-p PASSWORD] [-g GRANT_TO_DATABASE_NAME] USER_NAME[@HOST_NAME]
+    drop-user   USER_NAME[@HOST_NAME]
+    show-grants USER_NAME[@HOST_NAME]
+    dump        DATABASE_NAME [OUTPUT_FILE]
+    remote-dump [-i ID_RSA] [-p SSH_PORT] [REMOTE_USER@]REMOTE_HOST[:SSH_PORT] DATABASE_NAME [OUTPUT_FILE]
+      ex) ${SCRIPT_NAME} remote-dump -i ~/.ssh/id_rsa foo@example.com:22 mydatabase mydatabase.sql
+    help
+
+  MySQL's root password should be given as environmental variable MYSQL_ROOT_PASS.
+    eg. $ export MYSQL_ROOT_PASS='YOUR_PASSWORD'
+    eg. $ MYSQL_ROOT_PASS='YOUR_PASSWORD' ${SCRIPT_NAME} list-db
+EOM
+  exit 1
+}
+#}}}
+
+#-------------------------------------------------------------------------------
+#- Main process ----------------------------------------------------------------
+#-------------------------------------------------------------------------------
+
+__setupcolor
+
+# check environment valiable
+if [[ ! "$MYSQL_ROOT_PASS" ]]; then
+  echo -e "${C_RED}An environmental valiable MYSQL_ROOT_PASS is not set. Please set as bellow.${C_OFF}"
+  echo -e "  export MYSQL_ROOT_PASS='YOUR_PASSWORD'"
+  echo ''
+  _usage
+fi
+
+# Get options
+[[ $# -eq 0 ]] && _usage
+
+SUBCMD="$1"
+shift
+if [[ "$1" = "-d" ]]; then
+  DRY_RUN=yes
+  shift
+fi
+
+case "$SUBCMD" in
+  list-db) _listdb
+    ;;
+  exists-db) _existsdb "$1"; exit $?
+    ;;
+  create-db) _createdb "$1"; exit $?
+    ;;
+  drop-db) _dropdb "$1"; exit $?
+    ;;
+  list-users) _listusers
+    ;;
+  exists-user) _existsuser "$1"; exit $?
+    ;;
+  create-user) _createuser $@; exit $?
+    ;;
+  drop-user) _dropuser "$1"; exit $?
+    ;;
+  show-grants) _showgrants "$1"; exit $?
+    ;;
+  dump) _dumpdb "$1" "$2"; exit $?
+    ;;
+  remote-dump) _remote_dump $@; exit $?
+    ;;
+  help) _usage
+    ;;
+  *) _usage "Unknown command : $SUBCMD"
+    ;;
+esac
+
+# vim: ts=2 sw=2 sts=2 et nu foldmethod=marker
