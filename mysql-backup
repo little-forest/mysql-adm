@@ -205,12 +205,6 @@ if [[ ! -x "$COMPRESS_PROG" ]]; then
 fi
 ARCHIVE_FILE=$BACKUP_BASE/mysql/"mysql-`date "$DATE_FORMAT"`.tar${ARCHIVE_FILE_SUFFIX}"
 
-echo $SILENT_MODE
-echo $CONF_FILE
-echo $ARCHIVE_FILE
-echo $TAR_OPT
-exit
-
 #- Main process ----------------------------------------------------------------
 __syslog "Backup start."
 
