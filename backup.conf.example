@@ -5,4 +5,5 @@ MYSQLDUMP=/usr/bin/mysqldump
 MYSQLSHOW=/usr/bin/mysqlshow
 COMPRESS_PROG=/usr/bin/pigz
 ARCHIVE_FILE_SUFFIX=.gz
+#DATE_FORMAT=+%Y%m%d_%H%M%S
 DATE_FORMAT=+%Y%m%d

@@ -44,7 +44,7 @@ __setupcolor() { #{{{
   C_CYAN="${ESC}36${ESCEND}"
   C_WHITE="${ESC}37${ESCEND}"
 
-  RES_COL=60
+  RES_COL=72
   MOVE_TO_COL="echo -en \\033[${RES_COL}G"
 }
 #}}}
@@ -88,7 +88,8 @@ __syslog() { #{{{
 
 __show_ok() { #{{{
   [ "${SILENT_MODE}" ] && return
-  [[ "$1" && "$1" -gt 0 ]] && echo -en "\\033[${1}G"
+  [[ "$1" && "$1" -gt 0 ]] && local RES_COL="$1" || local RES_COL="${RES_COL}"
+  echo -en "\\033[${RES_COL}G"
   echo -en "[ ${C_GREEN}OK${C_OFF}"
   [ "$2" ] && echo " ]$2" || echo " ]"
 }
@@ -96,7 +97,8 @@ __show_ok() { #{{{
 
 __show_failed() { #{{{
   [ "${SILENT_MODE}" ] && return
-  [[ "$1" && "$1" -gt 0 ]] && echo -en "\\033[${1}G"
+  [[ "$1" && "$1" -gt 0 ]] && local RES_COL="$1" || local RES_COL="${RES_COL}"
+  echo -en "\\033[${RES_COL}G"
   echo -en "[ ${C_RED}FAILED${C_OFF}"
   [ "$2" ] && echo " ]$2" || echo " ]"
 }
@@ -203,16 +205,20 @@ if [[ ! -x "$COMPRESS_PROG" ]]; then
   TAR_OPT="z${TAR_OPT}"
   ARCHIVE_FILE_SUFFIX=.gz
 fi
+TAR_OPT="${TAR_OPT}f"
 ARCHIVE_FILE=$BACKUP_BASE/mysql/"mysql-`date "$DATE_FORMAT"`.tar${ARCHIVE_FILE_SUFFIX}"
 
 #- Main process ----------------------------------------------------------------
+[[ "$DRY_RUN" ]] && __show_info "[DRY-RUN]"
+
 __syslog "Backup start."
+__show_info "Backup start."
 
 __prepare_dir `dirname $ARCHIVE_FILE` || __error_end "Unable to create directory"
 
 DUMP_STATUS=0
 
-BACKUP_TMP_DIR=`mktemp -d`
+[[ ! "$DRY_RUN" ]] && BACKUP_TMP_DIR=`mktemp -d`
 
 # Dump each databases
 for DBNAME in `${MYSQLSHOW} -u root -p${MYSQL_ROOT_PASS} | tail -n +4 | sed -e '$d' | awk '{print $2}'`; do
@@ -221,27 +227,36 @@ for DBNAME in `${MYSQLSHOW} -u root -p${MYSQL_ROOT_PASS} | tail -n +4 | sed -e '
 
    [ "$DBNAME" == "mysql" ] && OPT=$DUMP_OPT_MYSQL
 
-   __show_info -n "Backup $DBNAME to $BACKUP_SQL ..."
-   if [[ -n "$DRY_RUN" ]]; then
+   echo -n "  Backup $DBNAME to $BACKUP_SQL ..."
+   if [[ ! "$DRY_RUN" ]]; then
      ${MYSQLDUMP} -u root -p${MYSQL_ROOT_PASS} ${OPT} ${DBNAME} > ${BACKUP_SQL}
      if [ $? ]; then
        # check file size
        SIZE=`ls -l $BACKUP_SQL | awk '{print $5}'`
        if [ $SIZE -ge 0 ]; then
          __syslog "  Dump $DBNAME successful."
-         __show_ok 60
+         __show_ok
        else
-         __show_failed 60
+         __show_failed
          __syslog "  Dump $DBNAME failed."
          DUMP_STATUS=1
        fi
      else
-       __show_failed 60
+       __show_failed
        __syslog "  Dump $DBNAME failed."
        DUMP_STATUS=1
      fi
+   else
+     echo ""
    fi
 done
+
+# When dry-run mode exit here
+if [[ "$DRY_RUN" ]]; then
+  __show_info -n "[DRY-RUN]"
+  echo " Will be archived : tar ${TAR_OPT} ${ARCHIVE_FILE} --use-compress-prog=${COMPRESS_PROG} *.sql"
+  exit 0
+fi
 
 if [[ $DUMP_STATUS -eq 1 ]]; then
   rm -rf $BACKUP_TMP_DIR
@@ -251,22 +266,20 @@ fi
 # Archive
 pushd $BACKUP_TMP_DIR > /dev/null
 __syslog "  Archiving... : $ARCHIVE_FILE"
-__show_info -n "  Archiving... : $ARCHIVE_FILE"
-[[ -n "$DRY_RUN" ]] && tar c $ARCHIVE_FILE --use-compress-prog=${COMPRESS_PROG} *.sql
+echo "  Archiving... : $ARCHIVE_FILE"
+tar ${TAR_OPT} ${ARCHIVE_FILE} --use-compress-prog=${COMPRESS_PROG} *.sql
 popd > /dev/null
 
 rm -rf $BACKUP_TMP_DIR
 
-if [[ -n "$DRY_RUN" ]]; then
-  if [[ -e $ARCHIVE_FILE ]]; then
-    __show_info "Backup was successfully completed. :${ARCHIVE_FILE}"
-    __syslog "Backup was successfully completed. :${ARCHIVE_FILE}"
-    exit 0
-  else
-    __show_error "Backup failed. :${ARCHIVE_FILE}"
-    __syslog "Backup failed. :${ARCHIVE_FILE}"
-    exit 1
-  fi
+if [[ -e $ARCHIVE_FILE ]]; then
+  __show_info "Backup was successfully completed. :${ARCHIVE_FILE}"
+  __syslog "Backup was successfully completed. :${ARCHIVE_FILE}"
+  exit 0
+else
+  __show_error "Backup failed. :${ARCHIVE_FILE}"
+  __syslog "Backup failed. :${ARCHIVE_FILE}"
+  exit 1
 fi
 
 # vim: ts=2 sw=2 sts=2 et nu foldmethod=marker
