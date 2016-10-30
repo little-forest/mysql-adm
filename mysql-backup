@@ -144,10 +144,10 @@ __prepare_dir() { #{{{
 #{{{
 _usage() {
   [ "$1" ] && __show_error "$1"
-  echo -e "${C_CYAN}usege :${C_OFF} $SCRIPT_NAME [--SILENT] [-h] [-d] -c CONF_FILE"
+  echo -e "${C_CYAN}usege :${C_OFF} $SCRIPT_NAME [--silent] [-h] [-d] -c CONF_FILE"
   cat <<EOM
   OPTIONS
-    --SILENT will not display messages (for batch job)
+    --silent will not display messages (for batch job)
     -c       specify configuration file path
     -d       dry run
     -h       show this help
@@ -171,7 +171,7 @@ EOM
 [[ ! "$NO_COLOR" ]] && __setupcolor
 
 #- Get options -----------------------------------------------------------------
-[[ "$1" = "--SILENT" ]] && SILENT_MODE=yes && shift
+[[ "$1" = "--silent" ]] && SILENT_MODE=yes && shift
 while getopts c:dh OPT; do
   case "$OPT" in
     c) CONF_FILE=$OPTARG
