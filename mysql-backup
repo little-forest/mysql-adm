@@ -20,7 +20,7 @@ ARCHIVE_FILE_SUFFIX=.gz
 DATE_FORMAT=+%Y%m%d
 #-------------------------------------------------------------------------------
 
-DUMP_OPT="--lock-all-tables --add-drop-database --add-drop-table"
+DUMP_OPT="--lock-all-tables --hex-blob --add-drop-database --add-drop-table"
 DUMP_OPT_INFORMATION_SCHEMA=""
 DUMP_OPT_MYSQL="--lock-all-tables --events"
 TAR_OPT=c
