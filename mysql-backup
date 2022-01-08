@@ -30,13 +30,20 @@ _SYSLOG=
 #-------------------------------------------------------------------------------
 #- common functions ------------------------------------------------------------
 
-__setupcolor() { #{{{
+__setup_color() { #{{{
   local I
   local COLOR_MAP=(\
     BLACK 0 MAROON 1 GREEN 2 OLIVE 3 NAVY 4 PURPLE 5 TEAL 6 SILVER 7 GREY 8 \
     RED 9 LIME 10 YELLOW 11 BLUE 12 FUCHSIA 13 AQUA 14 WHITE 15 \
     MAGENTA 5 CYAN 6 PINK 218 ORANGE 214 DARK_ORANGE3 166 \
   )
+
+  # export color map when `__COLOR_MAP` is defined
+  [[ -v __COLOR_MAP ]] && __COLOR_MAP=("${COLOR_MAP[@]}")
+
+  if [[ $- == *u* ]] && [[ `type -t __setup_color_prepare_empty` == 'function' ]]; then
+    __setup_color_prepare_empty ${COLOR_MAP[@]}
+  fi
 
   C_OFF=`tput sgr0`   # Reset attribute
   C_BOLD=`tput bold`  # Bold mode
@@ -107,18 +114,20 @@ __show_warn() { #{{{
 #}}}
 
 __show_error() { #{{{
-  echo -e "[${C_RED}ERROR${C_OFF}] $@" >&2
-  __syslog "[ERROR] $@"
+  echo -e "[${C_RED}ERROR${C_OFF}] $*" >&2
 }
 #}}}
 
 __error_end() { #{{{
-  __show_error "$1"; exit 1
+  __show_error "$*"; exit 1
 }
 #}}}
 
 __script_end() { #{{{
-  [[ -d ${BACKUP_TMP_DIR} ]] && rm -rf ${BACKUP_TMP_DIR}
+  local FUNC
+  while read FUNC; do
+    $FUNC
+  done < <(declare -F | sed -e 's/^declare -f //' | egrep '^__?script_end_.+' | sort)
 }
 trap '__script_end' EXIT
 #}}}
@@ -197,7 +206,7 @@ tty -s || _NO_TTY=yes
 if [[ "${_NO_TTY}" == 'yes' ]]; then
   _SYSLOG=yes
 else
-  __setupcolor
+  __setup_color
 fi
 
 #- Get options -----------------------------------------------------------------
