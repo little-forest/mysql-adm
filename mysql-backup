@@ -1,9 +1,6 @@
 #!/bin/bash
 #===============================================================================
 # mysql-backup :
-# Date    :  2016/09/18 Start
-# Copyright: Original code by Yusuke Komori.
-#                       Copyright (c) 2016. Yusuke Komori, All rights reserved.
 #===============================================================================
 
 SCRIPT_BASE=`echo $(cd $(dirname $0); pwd)`
@@ -13,99 +10,82 @@ SCRIPT_NAME=`basename $0`
 # User Configuration -----------------------------------------------------------
 MYSQL_ROOT_PASS=
 BACKUP_BASE=/backup
+MYSQL=/usr/bin/mysql
 MYSQLDUMP=/usr/bin/mysqldump
-MYSQLSHOW=/usr/bin/mysqlshow
 COMPRESS_PROG=/usr/bin/pigz
 ARCHIVE_FILE_SUFFIX=.gz
 DATE_FORMAT=+%Y%m%d
 #-------------------------------------------------------------------------------
 
-DUMP_OPT="--lock-all-tables --hex-blob --add-drop-database --add-drop-table"
+DUMP_OPT=(--lock-all-tables --hex-blob --add-drop-database --add-drop-table)
 DUMP_OPT_INFORMATION_SCHEMA=""
-DUMP_OPT_MYSQL="--lock-all-tables --events"
-TAR_OPT=c
+DUMP_OPT_MYSQL=(--lock-all-tables --events)
+TAR_OPT=(-c)
+
+cat /proc/$$/cgroup | egrep -q '^[0-9]+:name=systemd:/system.slice'
+[[ $? -eq 0 ]] && SYSTEMD_SLICE=yes
+
+[[ "${SYSTEMD_SLICE}" != 'yes' ]] && __MSG_COL=70
 
 #-------------------------------------------------------------------------------
 #- common functions ------------------------------------------------------------
 
-__setupcolor() { #{{{
-  # Escape sequence
-  ESC="\e["
-  ESCEND=m
-  C_OFF=${ESC}${ESCEND}
+__setup_color() { #{{{
+  local I
+  local COLOR_MAP=(\
+    BLACK 0 MAROON 1 GREEN 2 OLIVE 3 NAVY 4 PURPLE 5 TEAL 6 SILVER 7 GREY 8 \
+    RED 9 LIME 10 YELLOW 11 BLUE 12 FUCHSIA 13 AQUA 14 WHITE 15 \
+    MAGENTA 5 CYAN 6 MALIBU 74 PINK 218 ORANGE 214 DARK_ORANGE3 166 \
+  )
 
-  # normal
-  C_BLACK="${ESC}30${ESCEND}"
-  C_RED="${ESC}31${ESCEND}"
-  C_GREEN="${ESC}32${ESCEND}"
-  C_YELLOW="${ESC}33${ESCEND}"
-  C_BLUE="${ESC}34${ESCEND}"
-  C_MAGENTA="${ESC}35${ESCEND}"
-  C_CYAN="${ESC}36${ESCEND}"
-  C_WHITE="${ESC}37${ESCEND}"
+  # export color map when `__COLOR_MAP` is defined
+  [[ -v __COLOR_MAP ]] && __COLOR_MAP=("${COLOR_MAP[@]}")
 
-  RES_COL=72
-  MOVE_TO_COL="echo -en \\033[${RES_COL}G"
-}
-#}}}
-
-__syslog() { #{{{
-  # syslog へログを出力します。
-  #  引数を指定しない場合は、標準入力からの読み取り結果をログ出力します。
-  #
-  # 【環境変数】LOG_TAG            タグ
-  #             LOG_FACILITY(任意) ファシリティ(省略時はuser)
-  #             SCRIPT_NAME (任意) スクリプト名
-  # 【引数】 $1:ログメッセージ
-  #          $2:ログレベル(省略可, 省略時は info)
-
-  [[ -n "${DRY_RUN}" ]] && return 
-  [ ! "$SCRIPT_NAME" ] && local SCRIPT_NAME=`basename $0`
-  if [ "$LOG_TAG" ]; then
-    local TAG="${LOG_TAG}/${SCRIPT_NAME}"
-  else
-    local TAG="${SCRIPT_NAME}"
+  if [[ $- == *u* ]] && [[ `type -t __setup_color_prepare_empty` == 'function' ]]; then
+    __setup_color_prepare_empty ${COLOR_MAP[@]}
   fi
 
-  local FACILITY=user
-  [[ "$LOG_FACILITY" ]] && FACILITY=$LOG_FACILITY
+  C_OFF=`tput sgr0`   # Reset attribute
+  C_BOLD=`tput bold`  # Bold mode
+  C_REV=`tput rev`    # Reverse mode
+  C_UL=`tput smul`    # Underline mode
 
-  local LOG_LEVEL=info
-  [[ "$2" ]] && LOG_LEVEL="$2"
-
-  if [[ "$1" ]]; then
-    logger -t "$TAG" -p "${FACILITY}.${LOG_LEVEL}" "$1"
-  else
-    local OLDIFS="$IFS"
-    IFS=
-    while read LOG_LINE; do
-      logger -t "$TAG" -p "${FACILITY}.${LOG_LEVEL}" "$LOG_LINE"
-    done
-    IFS="$OLDIFS"
-  fi
+  for ((I=0; I<${#COLOR_MAP[@]}; I+=2)); do
+    # echo "$I : ${COLOR_MAP[$I]} ${COLOR_MAP[(($I + 1))]}"
+    eval "C_${COLOR_MAP[$I]}=\`tput setaf ${COLOR_MAP[(($I + 1))]}\`"
+    eval "C_B_${COLOR_MAP[$I]}=\`tput bold\`\`tput setaf ${COLOR_MAP[(($I + 1))]}\`"
+    eval "C_U_${COLOR_MAP[$I]}=\`tput smul\`\`tput setaf ${COLOR_MAP[(($I + 1))]}\`"
+    eval "C_R_${COLOR_MAP[$I]}=\`tput bold\`\`tput rev\`\`tput setaf ${COLOR_MAP[(($I + 1))]}\`"
+  done
 }
 #}}}
 
 __show_ok() { #{{{
-  [ "${SILENT_MODE}" ] && return
-  [[ "$1" && "$1" -gt 0 ]] && local RES_COL="$1" || local RES_COL="${RES_COL}"
-  echo -en "\\033[${RES_COL}G"
-  echo -en "[ ${C_GREEN}OK${C_OFF}"
-  [ "$2" ] && echo " ]$2" || echo " ]"
+  [[ -n "${__SILENT}" ]] && return
+  local COL
+  [[ ! "$1" =~ [0-9]+ ]] && COL="${__MSG_COL}" || COL="$1" && shift 1
+  local MSG="$1"
+
+  [[ -n "${COL}" ]] && echo -en "\\033[${COL}G"
+  echo -en " [ ${C_GREEN}OK${C_OFF}"
+  [[ -n "${MSG}" ]] && echo " ] ${MSG}" || echo " ]"
 }
 #}}}
 
 __show_failed() { #{{{
-  [ "${SILENT_MODE}" ] && return
-  [[ "$1" && "$1" -gt 0 ]] && local RES_COL="$1" || local RES_COL="${RES_COL}"
-  echo -en "\\033[${RES_COL}G"
-  echo -en "[ ${C_RED}FAILED${C_OFF}"
-  [ "$2" ] && echo " ]$2" || echo " ]"
+  [[ -n "${__SILENT}" ]] && return
+  local COL
+  [[ ! "$1" =~ [0-9]+ ]] && COL="${__MSG_COL}" || COL="$1" && shift 1
+  local MSG="$1"
+
+  [[ -n "${COL}" ]] && echo -en "\\033[${COL}G"
+  echo -en " [ ${C_RED}FAILED${C_OFF}"
+  [[ -n "${MSG}" ]] && echo " ] ${MSG}" || echo " ]"
 }
 #}}}
 
 __show_info() { #{{{
-  [[ -n "${SILENT_MODE}" ]] && return
+  [[ -n "${__SILENT}" ]] && return
   [[ "$1" == "-n" ]] && echo -en "${C_CYAN}${2}${C_OFF}" || echo -e "${C_CYAN}${1}${C_OFF}"
 }
 #}}}
@@ -116,13 +96,22 @@ __show_warn() { #{{{
 #}}}
 
 __show_error() { #{{{
-  echo -e "[${C_RED}ERROR${C_OFF}] $1"
+  echo -e "[${C_RED}ERROR${C_OFF}] $*" >&2
 }
 #}}}
 
 __error_end() { #{{{
-  __show_error "$1"; exit 1
+  __show_error "$*"; exit 1
 }
+#}}}
+
+__script_end() { #{{{
+  local FUNC
+  while read FUNC; do
+    $FUNC
+  done < <(declare -F | sed -e 's/^declare -f //' | egrep '^__?script_end_.+' | sort)
+}
+trap '__script_end' EXIT
 #}}}
 
 __prepare_dir() { #{{{
@@ -136,47 +125,81 @@ __prepare_dir() { #{{{
 }
 #}}}
 
-
 #-------------------------------------------------------------------------------
 #- functions -------------------------------------------------------------------
 
-# usage
-#{{{
-_usage() {
-  [ "$1" ] && __show_error "$1"
-  echo -e "${C_CYAN}usege :${C_OFF} $SCRIPT_NAME [--silent] [-h] [-d] -c CONF_FILE"
+_usage() { #{{{
+  local STATUS=0
+  if [[ -n "$@" ]]; then
+    __show_error "$@"
+    STATUS=1
+    echo
+  fi
+  local B=${C_B_MALIBU}
+  echo -e "${B}usege :${C_OFF} ${SCRIPT_NAME} [--silent] [-h] [-d] -c CONF_FILE"
   cat <<EOM
-  OPTIONS
-    --silent will not display messages (for batch job)
-    -c       specify configuration file path
-    -d       dry run
-    -h       show this help
+  ${B}OPTIONS${C_OFF}
+    ${B}--silent${C_OFF} will not display messages (for batch job)
+    ${B}-c${C_OFF}       specify configuration file path
+    ${B}-d${C_OFF}       dry run
+    ${B}-h${C_OFF}       show this help
   
-  CONFIGURATIONS
+  ${B}CONFIGURATIONS${C_OFF}
     MYSQL_ROOT_PASS=**********   # required
     BACKUP_BASE=/backup
+    MYSQL=/usr/bin/mysql
     MYSQLDUMP=/usr/bin/mysqldump
-    MYSQLSHOW=/usr/bin/mysqlshow
     COMPRESS_PROG=/usr/bin/pigz
     ARCHIVE_FILE_SUFFIX=.gz
     DATE_FORMAT=+%Y%m%d
 EOM
-  exit 1
+  exit $STATUS
+}
+#}}}
+
+_load_conf() { #{{{
+  local CONF_FILE="$1"
+  [[ -z "$CONF_FILE" ]] && __error_end "Configuration file is not specified."
+  if [[ ! -f "${CONF_FILE}" ]]; then
+    __error_end "Configuration file is not found. : ${CONF_FILE}"
+  fi
+
+  local PARAMS=(MYSQL_ROOT_PASS BACKUP_BASE MYSQL MYSQLDUMP)
+  PARAMS+=(COMPRESS_PROG ARCHIVE_FILE_SUFFIX DATE_FORMAT)
+
+  local PAT="^[ \t]*(`echo ${PARAMS[@]} | tr ' ' '|'`)="
+  source <(egrep "${PAT}" "${CONF_FILE}")
+
+  if [[ -z "${__SILENT}" ]]; then
+    echo "Configuration file loaded. : `readlink -f $CONF_FILE`"
+  fi
+}
+#}}}
+
+_list_database() { #{{{
+  ${MYSQL} -uroot -p${MYSQL_ROOT_PASS} <<<"show databases;" -N \
+    | egrep -v '^(information_schema|performance_schema)$' \
+    | xargs
+}
+#}}}
+
+_script_end_cleanup() { #{{{
+  [[ -d "${_BACKUP_TMP_DIR}" ]] && rm -rf "${_BACKUP_TMP_DIR}"
 }
 #}}}
 
 #-------------------------------------------------------------------------------
 #- Main process ----------------------------------------------------------------
 #-------------------------------------------------------------------------------
-[[ ! "$NO_COLOR" ]] && __setupcolor
+__setup_color
 
 #- Get options -----------------------------------------------------------------
-[[ "$1" = "--silent" ]] && SILENT_MODE=yes && shift
+[[ "$1" = "--silent" ]] && __SILENT=yes && shift
 while getopts c:dh OPT; do
   case "$OPT" in
     c) CONF_FILE=$OPTARG
       ;;
-    d) DRY_RUN=yes
+    d) _DRY_RUN=yes
       ;;
     h|\?) _usage
       ;;
@@ -185,100 +208,110 @@ done
 shift `expr $OPTIND - 1`
 
 #- Load configuration file -----------------------------------------------------
-[[ ! "$CONF_FILE" ]] && __error_end "Configuration file path is not specified."
-if [[ -f "$CONF_FILE" ]]; then
-  . "${CONF_FILE}"
-  __syslog "Configuration file loaded. : `readlink -f $CONF_FILE`"
-else
-  __error_end "File not found. : $CONF_FILE"
-fi
+_load_conf "${CONF_FILE}"
 
 #- Check options ---------------------------------------------------------------
-if [[ ! "$MYSQL_ROOT_PASS" ]]; then
-  echo -e "${C_RED}An environmental valiable MYSQL_ROOT_PASS is not set.${C_OFF}"
-  echo ''
-  _usage
-fi
+[[ ! "$MYSQL_ROOT_PASS" ]] && _usage "An environmental valiable MYSQL_ROOT_PASS is not set."
+[[ -z "${MYSQL}" ]] && MYSQL=`which mysql 2> /dev/null`
+[[ ! -x "${MYSQL}" ]] && __error_end "Unable to find mysql executable. : ${MYSQL}"
+
 if [[ ! -x "$COMPRESS_PROG" ]]; then
   __show_warn "$COMPRESS_PROG is not found. Use gzip."
   COMPRESS_PROG=""
-  TAR_OPT="z${TAR_OPT}"
+  TAR_OPT+=(-z)
   ARCHIVE_FILE_SUFFIX=.gz
 fi
-TAR_OPT="${TAR_OPT}f"
-ARCHIVE_FILE=$BACKUP_BASE/mysql/"mysql-`date "$DATE_FORMAT"`.tar${ARCHIVE_FILE_SUFFIX}"
+ARCHIVE_FILE=${BACKUP_BASE}/mysql/"mysql-`LANG=C date "${DATE_FORMAT}"`.tar${ARCHIVE_FILE_SUFFIX}"
+TAR_OPT+=(-f ${ARCHIVE_FILE})
 
 #- Main process ----------------------------------------------------------------
-[[ "$DRY_RUN" ]] && __show_info "[DRY-RUN]"
 
-__syslog "Backup start."
-__show_info "Backup start."
+[[ "$_DRY_RUN" == 'yes' ]] && __show_info "[DRY-RUN]"
 
-__prepare_dir `dirname $ARCHIVE_FILE` || __error_end "Unable to create directory"
+__show_info "Backup start." 
 
+if [[ "${_DRY_RUN}" != 'yes' ]]; then
+  DIR="`dirname $ARCHIVE_FILE`" 
+  __prepare_dir "${DIR}" || __error_end "Unable to create directory. : ${DIR}"
+fi
+_BACKUP_TMP_DIR=`mktemp -d`
 DUMP_STATUS=0
 
-[[ ! "$DRY_RUN" ]] && BACKUP_TMP_DIR=`mktemp -d`
 
+#-----------------------------------------------------------
 # Dump each databases
-for DBNAME in `${MYSQLSHOW} -u root -p${MYSQL_ROOT_PASS} | tail -n +4 | sed -e '$d' | awk '{print $2}'`; do
-   BACKUP_SQL=${BACKUP_TMP_DIR}/${DBNAME}.sql
-   OPT=$DUMP_OPT
+#-----------------------------------------------------------
+for DBNAME in `_list_database`; do
+  BACKUP_SQL=${_BACKUP_TMP_DIR}/${DBNAME}.sql
+  OPT=(-u root)
+  if [[ "${_DRY_RUN}" != 'yes' ]]; then
+    OPT+=(-p${MYSQL_ROOT_PASS})
+  else
+    OPT+=(-P)
+  fi
 
-   [ "$DBNAME" == "mysql" ] && OPT=$DUMP_OPT_MYSQL
+  if [[ "$DBNAME" == "mysql" ]]; then
+    OPT+=(${DUMP_OPT_MYSQL[@]})
+  else
+    OPT+=(${DUMP_OPT[@]})
+  fi
+  OPT+=(${DBNAME})
 
-   echo -n "  Backup $DBNAME to $BACKUP_SQL ..."
-   if [[ ! "$DRY_RUN" ]]; then
-     ${MYSQLDUMP} -u root -p${MYSQL_ROOT_PASS} ${OPT} ${DBNAME} > ${BACKUP_SQL}
-     if [ $? ]; then
-       # check file size
-       SIZE=`ls -l $BACKUP_SQL | awk '{print $5}'`
-       if [ $SIZE -ge 0 ]; then
-         __syslog "  Dump $DBNAME successful."
-         __show_ok
-       else
-         __show_failed
-         __syslog "  Dump $DBNAME failed."
-         DUMP_STATUS=1
-       fi
-     else
-       __show_failed
-       __syslog "  Dump $DBNAME failed."
-       DUMP_STATUS=1
-     fi
+  if [[ -z "${__SILENT}" ]]; then
+    echo -n "  Backup ${DBNAME} to ${BACKUP_SQL} ... "
+  fi
+
+  if [[ "$_DRY_RUN" == 'yes' ]]; then
+    echo
+    echo -e "  [${C_YELLOW}dry-run${C_OFF}] ${MYSQLDUMP} ${OPT[@]}"
+    continue
+  fi
+
+  # do mysqldump
+  ${MYSQLDUMP} ${OPT[@]} > ${BACKUP_SQL}
+  RESULT=$?
+  if [[ ${RESULT} -eq 0 ]]; then
+    # check file size
+    SIZE=`ls -l $BACKUP_SQL | awk '{print $5}'`
+    if [[ $SIZE -ge 0 ]]; then
+      __show_ok
+    else
+      __show_failed
+      DUMP_STATUS=1
+    fi
    else
-     echo ""
+     __show_failed
+     DUMP_STATUS=1
    fi
 done
 
+#-----------------------------------------------------------
+# Archive
+#-----------------------------------------------------------
+
+TAR_OPT+=(--use-compress-prog=${COMPRESS_PROG} *.sql)
 # When dry-run mode exit here
-if [[ "$DRY_RUN" ]]; then
+if [[ "$_DRY_RUN" ]]; then
   __show_info -n "[DRY-RUN]"
-  echo " Will be archived : tar ${TAR_OPT} ${ARCHIVE_FILE} --use-compress-prog=${COMPRESS_PROG} *.sql"
+  echo " Will be archived : tar ${TAR_OPT[@]}"
   exit 0
 fi
 
-if [[ $DUMP_STATUS -eq 1 ]]; then
-  rm -rf $BACKUP_TMP_DIR
+if [[ "${DUMP_STATUS}" -eq 1 ]]; then
   __error_end "Failed to dump databases."
 fi
 
 # Archive
-pushd $BACKUP_TMP_DIR > /dev/null
-__syslog "  Archiving... : $ARCHIVE_FILE"
-echo "  Archiving... : $ARCHIVE_FILE"
-tar ${TAR_OPT} ${ARCHIVE_FILE} --use-compress-prog=${COMPRESS_PROG} *.sql
+pushd ${_BACKUP_TMP_DIR} > /dev/null
+[[ -z "${__SILENT}" ]] && echo "  Archiving... : $ARCHIVE_FILE"
+tar ${TAR_OPT[@]}
 popd > /dev/null
 
-rm -rf $BACKUP_TMP_DIR
-
 if [[ -e $ARCHIVE_FILE ]]; then
-  __show_info "Backup was successfully completed. :${ARCHIVE_FILE}"
-  __syslog "Backup was successfully completed. :${ARCHIVE_FILE}"
+  __show_info "Backup was successfully completed. : ${ARCHIVE_FILE}"
   exit 0
 else
-  __show_error "Backup failed. :${ARCHIVE_FILE}"
-  __syslog "Backup failed. :${ARCHIVE_FILE}"
+  __show_error "Backup failed. : ${ARCHIVE_FILE}"
   exit 1
 fi
 
