@@ -255,7 +255,7 @@ for DBNAME in `_list_database`; do
   else
     OPT+=(${DUMP_OPT[@]})
   fi
-  OPT+=(${DBNAME})
+  OPT+=(--databases ${DBNAME})
 
   if [[ -z "${__SILENT}" ]]; then
     echo -n "  Backup ${DBNAME} to ${BACKUP_SQL} ... "
