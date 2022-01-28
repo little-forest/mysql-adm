@@ -171,6 +171,8 @@ _usage() { #{{{
     # Follow the specification of the date command
     DATE_FORMAT=+%Y%m%d
 
+  If MYSQL_PASSWORD is not specified, it will be read from the standard input.
+
   ${B}DEFAULT CONFIGURATION${C_OFF}
     MYSQL_USER=${MYSQL_USER}
     MYSQL_PASSWORD=
@@ -298,7 +300,12 @@ shift `expr $OPTIND - 1`
 _load_conf "${CONF_FILE}"
 
 #- Check options ---------------------------------------------------------------
-[[ -z "$MYSQL_PASSWORD" ]] && _usage "MYSQL_PASSWORD is required"
+if [[ -z "$MYSQL_PASSWORD" ]]; then
+  tty -s && MSG="Enter ${MYSQL_USER}'s password. : " 
+  tty -s && TIMEOUT=(-t 10)
+  read ${TIMEOUT[@]} -sp "${MSG}" MYSQL_PASSWORD
+  tty -s && echo
+fi
 
 #- Check requirements ----------------------------------------------------------
 #{{{
