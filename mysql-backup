@@ -211,7 +211,7 @@ _load_conf() { #{{{
 #}}}
 
 _list_database() { #{{{
-  local IGNORES="^(information_schema|performance_schema)$"
+  local IGNORES="^(information_schema|performance_schema|sys)$"
   local CMD="show databases;"
 
   if [[ -z "${CONTAINER_NAME}" ]]; then
@@ -271,7 +271,7 @@ _check_container_executable() { #{{{
   local CONTAINER="$1"
   local CMD="$2"
 
-  docker exec -it "${CONTAINER}" which "${CMD}" > /dev/null 2>&1
+  docker exec "${CONTAINER}" which "${CMD}" > /dev/null 2>&1
   return $?
 }
 #}}}
