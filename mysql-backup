@@ -154,6 +154,7 @@ _usage() { #{{{
   ${B}OPTIONS${C_OFF}
     ${B}--silent${C_OFF} will not display messages (for batch job)
     ${B}-c${C_OFF}       specify configuration file path
+    ${B}-f${C_OFF}       force overwrite archive file
     ${B}-d${C_OFF}       dry run
     ${B}-h${C_OFF}       show this help
   
@@ -283,9 +284,11 @@ __setup_color
 #- Get options -----------------------------------------------------------------
 #{{{
 [[ "$1" = "--silent" ]] && __SILENT=yes && shift
-while getopts c:dh OPT; do
+while getopts c:fdh OPT; do
   case "$OPT" in
     c) CONF_FILE=$OPTARG
+      ;;
+    f) FORCE_OVERWRITE=yes
       ;;
     d) _DRY_RUN=yes
       ;;
@@ -356,7 +359,10 @@ if [[ "${_DRY_RUN}" != 'yes' ]]; then
   __prepare_dir "${DIR}" || __error_end "Unable to create directory. : ${DIR}"
 fi
 
-[[ -f ${ARCHIVE_FILE} ]] && __error_end "Always exists ${ARCHIVE_FILE}"
+if [[ -f "${ARCHIVE_FILE}" ]]; then
+  [[ "${FORCE_OVERWRITE}" != 'yes' ]] && __error_end "Always exists ${ARCHIVE_FILE}"
+  [[ "${FORCE_OVERWRITE}" == 'yes' && ! -w "${ARCHIVE_FILE}" ]] && __error_end "Unable to overwrite ${ARCHIVE_FILE}"
+fi
 
 _BACKUP_TMP_DIR=`mktemp -d`
 DUMP_STATUS=0
