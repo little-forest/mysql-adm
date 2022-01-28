@@ -8,13 +8,16 @@ SCRIPT_NAME=`basename $0`
 
 #-------------------------------------------------------------------------------
 # User Configuration -----------------------------------------------------------
-MYSQL_ROOT_PASS=
 BACKUP_BASE=/backup
 MYSQL=/usr/bin/mysql
 MYSQLDUMP=/usr/bin/mysqldump
 COMPRESS_PROG=/usr/bin/pigz
+ARCHIVE_FILE_PREFIX=mysql-
 ARCHIVE_FILE_SUFFIX=.gz
-DATE_FORMAT=+%Y%m%d
+DATE_FORMAT=+%Y%m%d-%H%M%S
+MYSQL_USER=root
+MYSQL_PASSWORD=
+CONTAINER_NAME=
 #-------------------------------------------------------------------------------
 
 DUMP_OPT=(--lock-all-tables --hex-blob --add-drop-database --add-drop-table)
@@ -125,6 +128,16 @@ __prepare_dir() { #{{{
 }
 #}}}
 
+__make_temp_simple() { #{{{
+  [[ "$1" == '-d' ]] && local MAKE_DIR="$1"
+  if [[ `uname` == Darwin || ! -d /dev/shm ]]; then
+    mktemp ${MAKE_DIR}
+  else
+    mktemp -p /dev/shm ${MAKE_DIR}
+  fi
+}
+#}}}
+
 #-------------------------------------------------------------------------------
 #- functions -------------------------------------------------------------------
 
@@ -144,14 +157,31 @@ _usage() { #{{{
     ${B}-d${C_OFF}       dry run
     ${B}-h${C_OFF}       show this help
   
-  ${B}CONFIGURATIONS${C_OFF}
-    MYSQL_ROOT_PASS=**********   # required
+  ${B}CONFIGURATION EXAMPLE${C_OFF}
+    MYSQL_USER=root
+    MYSQL_PASSWORD=**********
     BACKUP_BASE=/backup
     MYSQL=/usr/bin/mysql
     MYSQLDUMP=/usr/bin/mysqldump
     COMPRESS_PROG=/usr/bin/pigz
+    # when specified, backup MySQL in the docker container
+    CONTAINER_NAME=             
+    ARCHIVE_FILE_PREFIX=mysql-
     ARCHIVE_FILE_SUFFIX=.gz
+    # Follow the specification of the date command
     DATE_FORMAT=+%Y%m%d
+
+  ${B}DEFAULT CONFIGURATION${C_OFF}
+    MYSQL_USER=${MYSQL_USER}
+    MYSQL_PASSWORD=
+    BACKUP_BASE=${BACKUP_BASE}
+    MYSQL=${MYSQL}
+    MYSQLDUMP=${MYSQLDUMP}
+    COMPRESS_PROG=${COMPRESS_PROG}
+    CONTAINER_NAME=${CONTAINER_NAME}
+    ARCHIVE_FILE_PREFIX=${ARCHIVE_FILE_PREFIX}
+    ARCHIVE_FILE_SUFFIX=${ARCHIVE_FILE_SUFFIX}
+    DATE_FORMAT=${DATE_FORMAT}
 EOM
   exit $STATUS
 }
@@ -164,27 +194,82 @@ _load_conf() { #{{{
     __error_end "Configuration file is not found. : ${CONF_FILE}"
   fi
 
-  local PARAMS=(MYSQL_ROOT_PASS BACKUP_BASE MYSQL MYSQLDUMP)
-  PARAMS+=(COMPRESS_PROG ARCHIVE_FILE_SUFFIX DATE_FORMAT)
+  local PARAMS=(MYSQL_USER MYSQL_PASSWORD BACKUP_BASE MYSQL MYSQLDUMP)
+  PARAMS+=(COMPRESS_PROG ARCHIVE_FILE_PREFIX ARCHIVE_FILE_SUFFIX DATE_FORMAT)
+  PARAMS+=(CONTAINER_NAME)
 
   local PAT="^[ \t]*(`echo ${PARAMS[@]} | tr ' ' '|'`)="
   source <(egrep "${PAT}" "${CONF_FILE}")
 
   if [[ -z "${__SILENT}" ]]; then
-    echo "Configuration file loaded. : `readlink -f $CONF_FILE`"
+    echo -e "${C_CYAN}Configuration file loaded.${C_OFF} : `readlink -f $CONF_FILE`"
   fi
 }
 #}}}
 
 _list_database() { #{{{
-  ${MYSQL} -uroot -p${MYSQL_ROOT_PASS} <<<"show databases;" -N \
-    | egrep -v '^(information_schema|performance_schema)$' \
-    | xargs
+  local IGNORES="^(information_schema|performance_schema)$"
+  local CMD="show databases;"
+
+  if [[ -z "${CONTAINER_NAME}" ]]; then
+    ${MYSQL} --defaults-file=<(echo -e "[client]\npassword=${MYSQL_PASSWORD}") \
+      -u${MYSQL_USER} -N <<<"${CMD}" \
+      | egrep -v "${IGNORES}" | xargs
+  else
+    local SECRET=`__make_temp_simple`
+    echo -e "[client]\npassword=${MYSQL_PASSWORD}" > ${SECRET}
+    docker cp ${SECRET} ${CONTAINER_NAME}:/secret
+    rm "${SECRET}"
+    docker exec -i ${CONTAINER_NAME} ${MYSQL} --defaults-extra-file=/secret -u${MYSQL_USER} -N <<< "${CMD}" \
+      | egrep -v "${IGNORES}" | xargs
+    docker exec -i ${CONTAINER_NAME} rm /secret
+  fi
+}
+#}}}
+
+_do_dump() { #{{{
+  local OPT=("$@")
+  local RESULT=0
+  local DUMP_ERR=`__make_temp_simple`
+
+  if [[ -z "${CONTAINER_NAME}" ]]; then
+    ${MYSQLDUMP} --defaults-extra-file=<(echo -e "[client]\npassword=${MYSQL_PASSWORD}") ${OPT[@]} 2> ${DUMP_ERR}
+    RESULT=$?
+  else
+    local SECRET=`__make_temp_simple`
+    echo -e "[client]\npassword=${MYSQL_PASSWORD}" > ${SECRET}
+    docker cp ${SECRET} ${CONTAINER_NAME}:/secret
+    rm "${SECRET}"
+    OPT=(--defaults-extra-file=/secret ${OPT[@]})
+    docker exec ${CONTAINER_NAME} ${MYSQLDUMP} ${OPT[@]} 2> ${DUMP_ERR}
+    local RESULT=$?
+    docker exec ${CONTAINER_NAME} rm /secret
+  fi
+
+  # show error
+  if [[ ${RESULT} -ne 0 ]]; then
+    echo >&2
+    echo -en "${C_RED}" >&2
+    cat ${DUMP_ERR} >&2
+    echo -en "${C_OFF}" >&2
+  fi
+  [[ -f ${DUMP_ERR} ]] && rm ${DUMP_ERR}
+
+  return $RESULT
 }
 #}}}
 
 _script_end_cleanup() { #{{{
   [[ -d "${_BACKUP_TMP_DIR}" ]] && rm -rf "${_BACKUP_TMP_DIR}"
+}
+#}}}
+
+_check_container_executable() { #{{{
+  local CONTAINER="$1"
+  local CMD="$2"
+
+  docker exec -it "${CONTAINER}" which "${CMD}" > /dev/null 2>&1
+  return $?
 }
 #}}}
 
@@ -194,6 +279,7 @@ _script_end_cleanup() { #{{{
 __setup_color
 
 #- Get options -----------------------------------------------------------------
+#{{{
 [[ "$1" = "--silent" ]] && __SILENT=yes && shift
 while getopts c:dh OPT; do
   case "$OPT" in
@@ -206,14 +292,41 @@ while getopts c:dh OPT; do
   esac
 done
 shift `expr $OPTIND - 1`
+#}}}
 
 #- Load configuration file -----------------------------------------------------
 _load_conf "${CONF_FILE}"
 
 #- Check options ---------------------------------------------------------------
-[[ ! "$MYSQL_ROOT_PASS" ]] && _usage "An environmental valiable MYSQL_ROOT_PASS is not set."
-[[ -z "${MYSQL}" ]] && MYSQL=`which mysql 2> /dev/null`
-[[ ! -x "${MYSQL}" ]] && __error_end "Unable to find mysql executable. : ${MYSQL}"
+[[ -z "$MYSQL_PASSWORD" ]] && _usage "MYSQL_PASSWORD is required"
+
+#- Check requirements ----------------------------------------------------------
+#{{{
+# check if docker can execute
+if [[ -n "${CONTAINER_NAME}" ]]; then
+  if ! docker info > /dev/null 2>&1; then
+    __error_end "Unable to run docker command"
+  fi
+fi
+
+# check mysql / mysqldump executable
+if [[ -z "${CONTAINER_NAME}" ]]; then
+  # for not container
+  [[ -z "${MYSQL}" ]] && MYSQL=`which mysql 2> /dev/null`
+  [[ ! -x "${MYSQL}" ]] && __error_end "Unable to find mysql executable. : ${MYSQL}"
+
+  [[ -z "${MYSQLDUMP}" ]] && MYSQL=`which mysqldump 2> /dev/null`
+  [[ ! -x "${MYSQLDUMP}" ]] && __error_end "Unable to find mysqldump executable. : ${MYSQLDUMP}"
+else
+  # for container
+  _check_container_executable ${CONTAINER_NAME} bash || __error_end "Unable to find bash in ${CONTAINER_NAME}"
+
+  [[ -z "${MYSQL}" ]] && MYSQL=mysql
+  _check_container_executable ${CONTAINER_NAME} ${MYSQL} || __error_end "Unable to find ${MYSQL} in ${CONTAINER_NAME}"
+
+  [[ -z "${MYSQLDUMP}" ]] && MYSQL=mysqldump
+  _check_container_executable ${CONTAINER_NAME} ${MYSQLDUMP} || __error_end "Unable to find ${MYSQLDUMP} in ${CONTAINER_NAME}"
+fi
 
 if [[ ! -x "$COMPRESS_PROG" ]]; then
   __show_warn "$COMPRESS_PROG is not found. Use gzip."
@@ -221,12 +334,13 @@ if [[ ! -x "$COMPRESS_PROG" ]]; then
   TAR_OPT+=(-z)
   ARCHIVE_FILE_SUFFIX=.gz
 fi
-ARCHIVE_FILE=${BACKUP_BASE}/mysql/"mysql-`LANG=C date "${DATE_FORMAT}"`.tar${ARCHIVE_FILE_SUFFIX}"
+ARCHIVE_FILE=${BACKUP_BASE}/"${ARCHIVE_FILE_PREFIX}`LANG=C date "${DATE_FORMAT}"`.tar${ARCHIVE_FILE_SUFFIX}"
 TAR_OPT+=(-f ${ARCHIVE_FILE})
+#}}}
 
 #- Main process ----------------------------------------------------------------
 
-[[ "$_DRY_RUN" == 'yes' ]] && __show_info "[DRY-RUN]"
+[[ "$_DRY_RUN" == 'yes' ]] && echo -e "${C_YELLOW}[DRY-RUN]${C_OFF}"
 
 __show_info "Backup start." 
 
@@ -234,21 +348,18 @@ if [[ "${_DRY_RUN}" != 'yes' ]]; then
   DIR="`dirname $ARCHIVE_FILE`" 
   __prepare_dir "${DIR}" || __error_end "Unable to create directory. : ${DIR}"
 fi
+
+[[ -f ${ARCHIVE_FILE} ]] && __error_end "Always exists ${ARCHIVE_FILE}"
+
 _BACKUP_TMP_DIR=`mktemp -d`
 DUMP_STATUS=0
-
 
 #-----------------------------------------------------------
 # Dump each databases
 #-----------------------------------------------------------
 for DBNAME in `_list_database`; do
   BACKUP_SQL=${_BACKUP_TMP_DIR}/${DBNAME}.sql
-  OPT=(-u root)
-  if [[ "${_DRY_RUN}" != 'yes' ]]; then
-    OPT+=(-p${MYSQL_ROOT_PASS})
-  else
-    OPT+=(-P)
-  fi
+  OPT=(-u ${MYSQL_USER})
 
   if [[ "$DBNAME" == "mysql" ]]; then
     OPT+=(${DUMP_OPT_MYSQL[@]})
@@ -258,17 +369,17 @@ for DBNAME in `_list_database`; do
   OPT+=(--databases ${DBNAME})
 
   if [[ -z "${__SILENT}" ]]; then
-    echo -n "  Backup ${DBNAME} to ${BACKUP_SQL} ... "
+    echo -n "  Backup ${DBNAME} to ${DBNAME}.sql ... "
   fi
 
   if [[ "$_DRY_RUN" == 'yes' ]]; then
     echo
-    echo -e "  [${C_YELLOW}dry-run${C_OFF}] ${MYSQLDUMP} ${OPT[@]}"
+    echo -e "  ${C_YELLOW}[dry-run]${C_OFF} ${MYSQLDUMP} ${OPT[@]}"
     continue
   fi
 
   # do mysqldump
-  ${MYSQLDUMP} ${OPT[@]} > ${BACKUP_SQL}
+  _do_dump ${OPT[@]} > ${BACKUP_SQL}
   RESULT=$?
   if [[ ${RESULT} -eq 0 ]]; then
     # check file size
@@ -292,7 +403,7 @@ done
 TAR_OPT+=(--use-compress-prog=${COMPRESS_PROG} *.sql)
 # When dry-run mode exit here
 if [[ "$_DRY_RUN" ]]; then
-  __show_info -n "[DRY-RUN]"
+  echo -n "${C_YELLOW}[DRY-RUN]${C_OFF}"
   echo " Will be archived : tar ${TAR_OPT[@]}"
   exit 0
 fi
@@ -303,7 +414,7 @@ fi
 
 # Archive
 pushd ${_BACKUP_TMP_DIR} > /dev/null
-[[ -z "${__SILENT}" ]] && echo "  Archiving... : $ARCHIVE_FILE"
+[[ -z "${__SILENT}" ]] && echo "  Archiving... : ${ARCHIVE_FILE}"
 tar ${TAR_OPT[@]}
 popd > /dev/null
 
