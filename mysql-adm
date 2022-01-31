@@ -9,48 +9,61 @@ SCRIPT_NAME=`basename $0`
 #-------------------------------------------------------------------------------
 #- common functions ------------------------------------------------------------
 
-__setupcolor() { #{{{
-  # Escape sequence
-  ESC="\e["
-  ESCEND=m
-  C_OFF=${ESC}${ESCEND}
+__setup_color() { #{{{
+  local I
+  local COLOR_MAP=(\
+    BLACK 0 MAROON 1 GREEN 2 OLIVE 3 NAVY 4 PURPLE 5 TEAL 6 SILVER 7 GREY 8 \
+    RED 9 LIME 10 YELLOW 11 BLUE 12 FUCHSIA 13 AQUA 14 WHITE 15 \
+    MAGENTA 5 CYAN 6 MALIBU 74 PINK 218 ORANGE 214 DARK_ORANGE3 166 \
+  )
 
-  # normal
-  C_BLACK="${ESC}30${ESCEND}"
-  C_RED="${ESC}31${ESCEND}"
-  C_GREEN="${ESC}32${ESCEND}"
-  C_YELLOW="${ESC}33${ESCEND}"
-  C_BLUE="${ESC}34${ESCEND}"
-  C_MAGENTA="${ESC}35${ESCEND}"
-  C_CYAN="${ESC}36${ESCEND}"
-  C_WHITE="${ESC}37${ESCEND}"
+  # export color map when `__COLOR_MAP` is defined
+  [[ -v __COLOR_MAP ]] && __COLOR_MAP=("${COLOR_MAP[@]}")
 
-  RES_COL=60
-  MOVE_TO_COL="echo -en \\033[${RES_COL}G"
+  if [[ $- == *u* ]] && [[ `type -t __setup_color_prepare_empty` == 'function' ]]; then
+    __setup_color_prepare_empty ${COLOR_MAP[@]}
+  fi
+
+  C_OFF=`tput sgr0`   # Reset attribute
+  C_BOLD=`tput bold`  # Bold mode
+  C_REV=`tput rev`    # Reverse mode
+  C_UL=`tput smul`    # Underline mode
+
+  for ((I=0; I<${#COLOR_MAP[@]}; I+=2)); do
+    # echo "$I : ${COLOR_MAP[$I]} ${COLOR_MAP[(($I + 1))]}"
+    eval "C_${COLOR_MAP[$I]}=\`tput setaf ${COLOR_MAP[(($I + 1))]}\`"
+    eval "C_B_${COLOR_MAP[$I]}=\`tput bold\`\`tput setaf ${COLOR_MAP[(($I + 1))]}\`"
+    eval "C_U_${COLOR_MAP[$I]}=\`tput smul\`\`tput setaf ${COLOR_MAP[(($I + 1))]}\`"
+    eval "C_R_${COLOR_MAP[$I]}=\`tput bold\`\`tput rev\`\`tput setaf ${COLOR_MAP[(($I + 1))]}\`"
+  done
 }
 #}}}
 
 __show_ok() { #{{{
-  [ "${SILENT_MODE}" ] && return
-  [[ "$1" && "$1" -gt 0 ]] && echo -en "\\033[${1}G"
-  echo -en "[ ${C_GREEN}OK${C_OFF}"
-  [ "$2" ] && echo " ]$2" || echo " ]"
+  [[ -n "${__SILENT}" ]] && return
+  local COL
+  [[ ! "$1" =~ [0-9]+ ]] && COL="${__MSG_COL}" || COL="$1" && shift 1
+  local MSG="$1"
+
+  [[ -n "${COL}" ]] && echo -en "\\033[${COL}G"
+  echo -en " [ ${C_GREEN}OK${C_OFF}"
+  [[ -n "${MSG}" ]] && echo " ] ${MSG}" || echo " ]"
 }
 #}}}
 
 __show_info() { #{{{
-  [[ -n "${SILENT_MODE}" ]] && return
+  [[ -n "${__SILENT}" ]] && return
   [[ "$1" == "-n" ]] && echo -en "${C_CYAN}${2}${C_OFF}" || echo -e "${C_CYAN}${1}${C_OFF}"
 }
 #}}}
 
 __show_error() { #{{{
-  echo -e "[${C_RED}ERROR${C_OFF}] $1"
+  echo -e "[${C_RED}ERROR${C_OFF}] $*" >&2
 }
 #}}}
 
 __error_end() { #{{{
-  __show_error "$1"; exit 1
+  __show_error "$*"; exit 1
 }
 #}}}
 
