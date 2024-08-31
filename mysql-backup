@@ -334,7 +334,7 @@ _check_container_executable() { #{{{
   local CONTAINER="$1"
   local CMD="$2"
 
-  docker exec "${CONTAINER}" which "${CMD}" > /dev/null 2>&1
+  docker exec "${CONTAINER}" /bin/sh -c "type ${CMD}" > /dev/null 2>&1
   return $?
 }
 #}}}
@@ -385,10 +385,10 @@ fi
 # check mysql / mysqldump executable
 if [[ -z "${CONTAINER_NAME}" ]]; then
   # for not container
-  [[ -z "${MYSQL}" ]] && MYSQL=`which mysql 2> /dev/null`
+  [[ -z "${MYSQL}" ]] && MYSQL=`command -v mysql 2> /dev/null`
   [[ ! -x "${MYSQL}" ]] && __error_end "Unable to find mysql executable. : ${MYSQL}"
 
-  [[ -z "${MYSQLDUMP}" ]] && MYSQL=`which mysqldump 2> /dev/null`
+  [[ -z "${MYSQLDUMP}" ]] && MYSQL=`command -v mysqldump 2> /dev/null`
   [[ ! -x "${MYSQLDUMP}" ]] && __error_end "Unable to find mysqldump executable. : ${MYSQLDUMP}"
 else
   # for container
