@@ -175,15 +175,12 @@ __rotate_files() { #{{{
   local BASEDIR="${BASH_REMATCH[1]}"
   local FILE_PATTERN="${BASH_REMATCH[2]}"
 
-  local FIND_ARGS=("${BASEDIR}" -mindepth 1 -maxdepth 1 -type f -name "${FILE_PATTERN}")
-  echo ">>> ${FIND_ARGS[@]}"
-
   # delete empty files
   __show_info "Deleting empty files..."
   CNT=0
   while read F; do
     ___do_rotate "$F" && CNT=$(( $CNT + 1 )) || RESULT=1
-  done < <(find ${FIND_ARGS[@]} -size 0c)
+  done < <(find "${BASEDIR}" -mindepth 1 -maxdepth 1 -type f -size 0c -name "${FILE_PATTERN}")
   [[ "$CNT" -eq 0 ]] && echo "  nothing to delete."
 
   # delete old files
@@ -191,7 +188,7 @@ __rotate_files() { #{{{
   CNT=0
   while read F; do
     ___do_rotate "$F" && CNT=$(( $CNT + 1 )) || RESULT=1
-  done < <(find ${FIND_ARGS[@]} -size +1c | sort -n | head --lines=-${RETENTION})
+  done < <(find "${BASEDIR}" -mindepth 1 -maxdepth 1 -type f -size +1c -name "${FILE_PATTERN}" | sort -n | head --lines=-${RETENTION})
   [[ "$CNT" -eq 0 ]] && echo "  nothing to delete."
 
   return $RESULT
