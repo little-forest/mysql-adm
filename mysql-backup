@@ -275,12 +275,12 @@ _list_database() { #{{{
   local CMD="show databases;"
 
   if [[ -z "${CONTAINER_NAME}" ]]; then
-    ${MYSQL} --defaults-file=<(echo -e "[client]\npassword=${MYSQL_PASSWORD}") \
+    ${MYSQL} --defaults-file=<(echo -e "[client]\npassword=\"${MYSQL_PASSWORD}\"") \
       -u${MYSQL_USER} -N <<<"${CMD}" \
       | egrep -v "${IGNORES}" | xargs
   else
     local SECRET=`__make_temp_simple`
-    echo -e "[client]\npassword=${MYSQL_PASSWORD}" > ${SECRET}
+    echo -e "[client]\npassword=\"${MYSQL_PASSWORD}\"" > ${SECRET}
     docker cp ${SECRET} ${CONTAINER_NAME}:/secret
     rm "${SECRET}"
     docker exec -i ${CONTAINER_NAME} ${MYSQL} --defaults-extra-file=/secret -u${MYSQL_USER} -N <<< "${CMD}" \
@@ -296,11 +296,11 @@ _do_dump() { #{{{
   local DUMP_ERR=`__make_temp_simple`
 
   if [[ -z "${CONTAINER_NAME}" ]]; then
-    ${MYSQLDUMP} --defaults-extra-file=<(echo -e "[client]\npassword=${MYSQL_PASSWORD}") ${OPT[@]} 2> ${DUMP_ERR}
+    ${MYSQLDUMP} --defaults-extra-file=<(echo -e "[client]\npassword=\"${MYSQL_PASSWORD}\"") ${OPT[@]} 2> ${DUMP_ERR}
     RESULT=$?
   else
     local SECRET=`__make_temp_simple`
-    echo -e "[client]\npassword=${MYSQL_PASSWORD}" > ${SECRET}
+    echo -e "[client]\npassword=\"${MYSQL_PASSWORD}\"" > ${SECRET}
     docker cp ${SECRET} ${CONTAINER_NAME}:/secret
     rm "${SECRET}"
     OPT=(--defaults-extra-file=/secret ${OPT[@]})
